@@ -1,49 +1,49 @@
-// Package config loads defaults, optional JSON, and explicit environment overrides.
+// Package config loads defaults and environment variables supplied by .env deployments.
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
 
 type Config struct {
-	Token  string `json:"-"`
+	Token  string
 	Server struct {
-		Listen     string `json:"listen"`
-		HTTPListen string `json:"http_listen"`
-		Domain     string `json:"domain"`
-		TLSMode    string `json:"tls_mode"`
-		TLSCert    string `json:"tls_cert"`
-		TLSKey     string `json:"tls_key"`
-	} `json:"server"`
+		Listen     string
+		HTTPListen string
+		Domain     string
+		TLSMode    string
+		TLSCert    string
+		TLSKey     string
+	}
 	ACME struct {
-		AcceptTOS    bool   `json:"accept_tos"`
-		Email        string `json:"email"`
-		DirectoryURL string `json:"directory_url"`
-		Directory    string `json:"directory"`
-	} `json:"acme"`
+		AcceptTOS    bool
+		Email        string
+		DirectoryURL string
+		Directory    string
+	}
 	Auth struct {
-		Enabled     bool   `json:"enabled"`
-		Username    string `json:"username"`
-		PasswordEnv string `json:"password_env"`
-		Password    string `json:"-"`
-	} `json:"auth"`
+		Enabled  bool
+		Username string
+		Password string
+	}
 	Cache struct {
-		Directory string `json:"directory"`
-		MaxSizeGB int64  `json:"max_size_gb"`
-	} `json:"cache"`
-	Registries map[string]RegistryConfig `json:"registries"`
+		Directory string
+		MaxSizeGB int64
+	}
+	Registries map[string]RegistryConfig
 }
 type RegistryConfig struct {
-	Upstream    string `json:"upstream"`
-	Username    string `json:"username,omitempty"`
-	PasswordEnv string `json:"password_env,omitempty"`
+	Upstream string
+	Username string
+	Password string
 }
 
 func Load() (Config, error) {
@@ -52,20 +52,13 @@ func Load() (Config, error) {
 	c.Server.Listen = ":8443"
 	c.Server.HTTPListen = ":8080"
 	c.Auth.Enabled = true
-	c.Auth.PasswordEnv = "PROXY_PASSWORD"
 	c.Cache.Directory = "/data/cache"
 	c.Cache.MaxSizeGB = 40
 	c.ACME.Directory = "/data/acme"
 	c.ACME.AcceptTOS = true
 	c.Registries = map[string]RegistryConfig{"docker.io": {Upstream: "https://registry-1.docker.io"}, "ghcr.io": {Upstream: "https://ghcr.io"}, "quay.io": {Upstream: "https://quay.io"}}
-	if p := os.Getenv("CONFIG_FILE"); p != "" {
-		b, e := os.ReadFile(p)
-		if e != nil {
-			return c, fmt.Errorf("CONFIG_FILE: %w", e)
-		}
-		if e = json.Unmarshal(b, &c); e != nil {
-			return c, fmt.Errorf("CONFIG_FILE JSON: %w", e)
-		}
+	if err := c.loadRegistries(); err != nil {
+		return c, err
 	}
 	for k, p := range map[string]*string{"PROXY_DOMAIN": &c.Server.Domain, "PROXY_USERNAME": &c.Auth.Username, "TLS_MODE": &c.Server.TLSMode, "TLS_CERT": &c.Server.TLSCert, "TLS_KEY": &c.Server.TLSKey, "HTTPS_LISTEN": &c.Server.Listen, "HTTP_LISTEN": &c.Server.HTTPListen, "CACHE_DIRECTORY": &c.Cache.Directory, "ACME_DIRECTORY": &c.ACME.Directory, "ACME_EMAIL": &c.ACME.Email, "ACME_DIRECTORY_URL": &c.ACME.DirectoryURL} {
 		if v, ok := os.LookupEnv(k); ok {
@@ -86,10 +79,7 @@ func Load() (Config, error) {
 		}
 		c.Cache.MaxSizeGB = n
 	}
-	c.Auth.Password = os.Getenv(c.Auth.PasswordEnv)
-	if v, ok := os.LookupEnv("PROXY_PASSWORD"); ok {
-		c.Auth.Password = v
-	}
+	c.Auth.Password = os.Getenv("PROXY_PASSWORD")
 	c.Server.Domain = strings.ToLower(strings.TrimSpace(c.Server.Domain))
 	if c.Server.TLSMode == "" {
 		if c.Server.TLSCert != "" && c.Server.TLSKey != "" {
@@ -100,19 +90,87 @@ func Load() (Config, error) {
 	}
 	return c, c.Validate()
 }
+
+// Built-in registries use convenient names; custom registries use named groups.
+func (c *Config) loadRegistries() error {
+	for _, entry := range []struct{ domain, prefix string }{
+		{"docker.io", "DOCKERHUB"}, {"ghcr.io", "GHCR"}, {"quay.io", "QUAY"},
+	} {
+		r, err := registryFromEnv(entry.prefix, entry.prefix+"_TOKEN", c.Registries[entry.domain].Upstream)
+		if err != nil {
+			return err
+		}
+		c.Registries[entry.domain] = r
+	}
+	// Discover groups from populated variables; no separate registry list is needed.
+	groups := map[string]bool{}
+	for _, env := range os.Environ() {
+		key, value, _ := strings.Cut(env, "=")
+		if value == "" || !strings.HasPrefix(key, "REGISTRY_") {
+			continue
+		}
+		for _, suffix := range []string{"_DOMAIN", "_UPSTREAM", "_USERNAME", "_PASSWORD"} {
+			if !strings.HasSuffix(key, suffix) {
+				continue
+			}
+			alias := strings.TrimSuffix(strings.TrimPrefix(key, "REGISTRY_"), suffix)
+			if !registryAlias.MatchString(alias) {
+				return fmt.Errorf("custom registry group names must start with an uppercase letter and contain only uppercase letters, digits and underscores")
+			}
+			groups[alias] = true
+			break
+		}
+	}
+	aliases := make([]string, 0, len(groups))
+	for alias := range groups {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	for _, alias := range aliases {
+		prefix := "REGISTRY_" + alias
+		domain := os.Getenv(prefix + "_DOMAIN")
+		if !ValidRegistryDomain(domain) {
+			return fmt.Errorf("%s_DOMAIN must be a lowercase registry domain, optionally with a port", prefix)
+		}
+		if _, exists := c.Registries[domain]; exists {
+			return fmt.Errorf("%s_DOMAIN specifies a duplicate registry; use DOCKERHUB_*, GHCR_* or QUAY_* for built-in registries", prefix)
+		}
+		upstream := "https://" + domain
+		if v, ok := os.LookupEnv(prefix + "_UPSTREAM"); ok {
+			upstream = v
+		}
+		r, err := registryFromEnv(prefix, prefix+"_PASSWORD", upstream)
+		if err != nil {
+			return err
+		}
+		c.Registries[domain] = r
+	}
+	return nil
+}
+
+var registryAlias = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+func registryFromEnv(prefix, passwordKey, upstream string) (RegistryConfig, error) {
+	r := RegistryConfig{Upstream: upstream, Username: os.Getenv(prefix + "_USERNAME"), Password: os.Getenv(passwordKey)}
+	if (r.Username == "") != (r.Password == "") || strings.Contains(r.Username, ":") || (r.Username != "" && strings.TrimSpace(r.Username) == "") {
+		return r, fmt.Errorf("%s_USERNAME and %s must both be set or both empty; username must be nonblank and contain no colon", prefix, passwordKey)
+	}
+	return r, nil
+}
+
 func (c Config) Validate() error {
 	if c.Token != "" && !safeToken.MatchString(c.Token) {
 		return fmt.Errorf("TOKEN must contain only URL-safe letters, digits, - and _")
 	}
 	if !c.Auth.Enabled {
-		return fmt.Errorf("auth.enabled must be true")
+		return fmt.Errorf("proxy authentication must be enabled")
 	}
 	if strings.TrimSpace(c.Auth.Username) == "" || strings.Contains(c.Auth.Username, ":") {
-		return fmt.Errorf("PROXY_USERNAME / auth.username must be nonempty and contain no colon")
+		return fmt.Errorf("PROXY_USERNAME must be nonempty and contain no colon")
 	}
 	p := strings.ToLower(strings.TrimSpace(c.Auth.Password))
 	if p == "" || strings.Contains(p, "replace") || strings.Contains(p, "替换") || p == "changeme" || p == "your-password" {
-		return fmt.Errorf("PROXY_PASSWORD (or auth.password_env) must contain a real nonempty password, not an example placeholder")
+		return fmt.Errorf("PROXY_PASSWORD must contain a real nonempty password, not an example placeholder")
 	}
 	if c.Server.Domain != "" && !validDomain(c.Server.Domain) {
 		return fmt.Errorf("PROXY_DOMAIN must be a single DNS hostname, without scheme, port, path or wildcard")
@@ -121,7 +179,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("TLS_MODE=cloudflare conflicts with manual TLS_CERT/TLS_KEY")
 	}
 	if (c.Server.TLSCert == "") != (c.Server.TLSKey == "") {
-		return fmt.Errorf("TLS_CERT and TLS_KEY / server.tls_cert and server.tls_key must both be set")
+		return fmt.Errorf("TLS_CERT and TLS_KEY must both be set")
 	}
 	switch c.Server.TLSMode {
 	case "cloudflare":
@@ -176,9 +234,6 @@ func (c Config) Validate() error {
 		return fmt.Errorf("registries must not be empty")
 	}
 	for name, r := range c.Registries {
-		if replacement, ok := map[string]string{"dockerhub": "docker.io", "ghcr": "ghcr.io", "quay": "quay.io"}[name]; ok {
-			return fmt.Errorf("legacy registry key %q: migrate to %q", name, replacement)
-		}
 		if !ValidRegistryDomain(name) {
 			return fmt.Errorf("invalid registry key %q: use a registry domain (optionally with port), not a short alias", name)
 		}
@@ -186,11 +241,8 @@ func (c Config) Validate() error {
 		if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return fmt.Errorf("registry %s upstream must be an HTTPS URL without credentials, query or fragment", name)
 		}
-		if (r.Username == "") != (r.PasswordEnv == "") {
-			return fmt.Errorf("registry %s requires both username and password_env", name)
-		}
-		if r.PasswordEnv != "" && os.Getenv(r.PasswordEnv) == "" {
-			return fmt.Errorf("registry %s password_env %s is empty", name, r.PasswordEnv)
+		if (r.Username == "") != (r.Password == "") || strings.Contains(r.Username, ":") || (r.Username != "" && strings.TrimSpace(r.Username) == "") {
+			return fmt.Errorf("registry %s requires both username and password, with a nonblank username containing no colon", name)
 		}
 	}
 	return nil

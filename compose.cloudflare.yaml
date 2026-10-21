@@ -10,8 +10,8 @@ services:
       TLS_MODE: cloudflare
     volumes:
       - type: bind
-        source: ./.mirror-token
-        target: /config/.mirror-token
+        source: ./.env
+        target: /config/.env
         bind:
           create_host_path: false
       - image-cache:/data/cache

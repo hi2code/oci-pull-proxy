@@ -24,6 +24,7 @@ import (
 
 func TestCommandsAndDirectoryCheck(t *testing.T) {
 	t.Chdir(t.TempDir())
+	t.Setenv("TOKEN", "")
 	var out, errout bytes.Buffer
 	t.Setenv("PROXY_PASSWORD", "")
 	if Main([]string{"version"}, &out, &errout) != 0 || !strings.Contains(out.String(), "oci-pull-proxy") {
@@ -33,7 +34,6 @@ func TestCommandsAndDirectoryCheck(t *testing.T) {
 		t.Fatal("invalid config accepted")
 	}
 	dir := t.TempDir()
-	t.Setenv("CONFIG_FILE", "")
 	t.Setenv("PROXY_DOMAIN", "images.example.com")
 	t.Setenv("PROXY_USERNAME", "alice")
 	t.Setenv("PROXY_PASSWORD", "real-test-secret")
@@ -43,6 +43,14 @@ func TestCommandsAndDirectoryCheck(t *testing.T) {
 	t.Setenv("ACME_DIRECTORY_URL", "https://127.0.0.1:1/directory")
 	if code := Main([]string{"check"}, &out, &errout); code != 0 {
 		t.Fatal(code, errout.String())
+	}
+	data, err := os.ReadFile(".env")
+	if err != nil || !strings.HasPrefix(string(data), "TOKEN=") {
+		t.Fatal("check did not persist TOKEN to .env", err)
+	}
+	saved := strings.TrimSpace(strings.TrimPrefix(string(data), "TOKEN="))
+	if strings.Contains(out.String(), saved) || strings.Contains(errout.String(), saved) {
+		t.Fatal("command exposed TOKEN")
 	}
 	entries, e := os.ReadDir(filepath.Join(dir, "acme"))
 	if e != nil || len(entries) != 0 {

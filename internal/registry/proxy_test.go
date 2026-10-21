@@ -225,7 +225,6 @@ func TestBearerTokenAndRangeMiss(t *testing.T) {
 func TestConfiguredDomainsAndPrivateCredentials(t *testing.T) {
 	for _, domain := range []string{"docker.io", "ghcr.io", "quay.io", "registry.example:5000"} {
 		t.Run(domain, func(t *testing.T) {
-			t.Setenv("UPSTREAM_SECRET", "private-secret")
 			var serverURL string
 			tokens := 0
 			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -257,10 +256,27 @@ func TestConfiguredDomainsAndPrivateCredentials(t *testing.T) {
 			}))
 			defer upstream.Close()
 			serverURL = upstream.URL
-			var cfg config.Config
-			cfg.Auth.Enabled, cfg.Auth.Username, cfg.Auth.Password = true, "client", "client-secret"
-			cfg.Cache.Directory, cfg.Cache.MaxSizeGB = t.TempDir(), 1
-			cfg.Registries = map[string]config.RegistryConfig{domain: {Upstream: upstream.URL, Username: "upstream-user", PasswordEnv: "UPSTREAM_SECRET"}}
+			t.Setenv("PROXY_DOMAIN", "images.example.com")
+			t.Setenv("PROXY_USERNAME", "client")
+			t.Setenv("PROXY_PASSWORD", "client-secret")
+			t.Setenv("CACHE_DIRECTORY", t.TempDir())
+			prefix := map[string]string{"docker.io": "DOCKERHUB", "ghcr.io": "GHCR", "quay.io": "QUAY"}[domain]
+			secretKey := prefix + "_TOKEN"
+			if prefix == "" {
+				prefix = "REGISTRY_CORP"
+				secretKey = prefix + "_PASSWORD"
+				t.Setenv(prefix+"_DOMAIN", domain)
+			}
+			t.Setenv(prefix+"_USERNAME", "upstream-user")
+			t.Setenv(secretKey, "private-secret")
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Keep production credential loading, but route requests to the local TLS fixture.
+			rc := cfg.Registries[domain]
+			rc.Upstream = upstream.URL
+			cfg.Registries[domain] = rc
 			p, err := New(cfg)
 			if err != nil {
 				t.Fatal(err)

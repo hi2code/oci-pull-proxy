@@ -10,7 +10,7 @@
 
 准备一台安装 Docker 的 Linux 服务器，将域名 A/AAAA 记录指向它，开放 TCP 80/443，并允许出站 HTTPS。以下以 `x.example.com` 为例，请替换为自己的域名。使用 Cloudflare 橙云时，见下方的 [Cloudflare 模式](#cloudflare-模式)。
 
-创建 `.env`，填写真实账号和长随机密码：
+复制 `.env.example` 为 `.env`（也可直接创建），填写真实账号和长随机密码：
 
 ```dotenv
 PROXY_DOMAIN=x.example.com
@@ -19,17 +19,15 @@ PROXY_PASSWORD=请替换为长随机密码
 ```
 
 ```sh
-chmod 600 .env
-# 一次性准备；已有 token 文件时请勿清空。Linux 容器以 UID/GID 65532 运行。
-touch .mirror-token
-sudo chown 65532:65532 .mirror-token
-sudo chmod 600 .mirror-token
+# 保留当前用户为所有者，允许容器的 GID 65532 写回 TOKEN。
+sudo chgrp 65532 .env
+chmod 660 .env
 docker run -d \
   --name oci-pull-proxy \
   --restart unless-stopped \
   --stop-timeout 30 \
   --env-file .env \
-  --mount type=bind,src="$(pwd)/.mirror-token",dst=/config/.mirror-token \
+  --mount type=bind,src="$(pwd)/.env",dst=/config/.env \
   -p 80:8080 -p 443:8443 \
   -v oci-cache:/data/cache \
   -v oci-acme:/data/acme \
@@ -44,7 +42,7 @@ docker logs -f oci-pull-proxy
 
 看到“HTTPS 已就绪”后即可使用。`oci-cache` 保存镜像缓存，`oci-acme` 保存证书和 ACME 账户；更新时复用原卷，不要删除证书卷。同一组目录只供一个实例使用；自定义宿主机目录需保证 UID/GID 65532 可写。
 
-也可在仓库根目录创建 `.env`、按上述步骤准备 `.mirror-token` 后运行 `docker compose up -d`。Compose 的卷名带项目名前缀，从 `docker run` 切换时需明确复用原卷。
+也可在仓库根目录创建 `.env`、按上述步骤设置 `.env` 权限后运行 `docker compose up -d`。Compose 的卷名带项目名前缀，从 `docker run` 切换时需明确复用原卷。
 
 ## 拉取镜像
 
@@ -83,23 +81,31 @@ docker run --rm -p 8080:80 x.example.com/nginx:latest
 }
 ```
 
-随后直接运行 `docker pull alpine:latest`，无需 `docker login`，镜像名保持原样。此入口只支持 Docker Hub 公共镜像，固定匿名访问 Docker Hub，不使用 JSON 中的上游替换或私有仓库凭据；缓存与原账号密码入口隔离。原登录和多仓库代理用法不变。
+随后直接运行 `docker pull alpine:latest`，无需 `docker login`，镜像名保持原样。此入口只支持 Docker Hub 公共镜像，固定匿名访问 Docker Hub，不使用环境变量配置的上游替换或私有仓库凭据；缓存与原账号密码入口隔离。原登录和多仓库代理用法不变。
 
-只新增可选环境变量 `TOKEN`：在 `.env` 写入 `TOKEN=你自己的随机字符串`（实际值仅允许 `A–Z a–z 0–9 - _`）。建议使用 32 字节以上密码学安全随机数。未配置或为空时，读取 `.env` 同目录的 `.mirror-token`；文件不存在或为空时生成 32 字节随机数，以无填充 Base64URL 保存（43 字符）。文件权限为 `0600`；文件必须保持完整的 43 字符生成值。文件损坏、不可读写或保存失败会启动报错，不会静默替换。非空 `TOKEN` 优先，不读取或覆盖该文件。
+在 `.env` 中设置 `TOKEN=你自己的随机字符串`（实际值仅允许 `A–Z a–z 0–9 - _`），或直接留空：
 
-从 `.env` 或 `sudo cat .mirror-token` 获取 token，服务日志不会打印它。Docker 的 `env_file` 仅传变量，所以所有部署示例均单独挂载该文件到 `/config/.mirror-token`，重建容器时复用同一文件，不新增状态卷。`deploy/compose.yaml` 使用其同目录的文件。
+```dotenv
+TOKEN=
+```
 
-更换 token：修改 `.env` 的 `TOKEN` 后重建容器；自动模式下先停止服务，再用 `sudo truncate -s 0 .mirror-token` 清空文件，重新启动后读取新 token，并更新客户端配置。不要在运行时删除或替换挂载文件。每个文件仅供一个实例使用。
+未配置或为空时，程序先读取挂载的 `.env`，复用其中已有的非空 `TOKEN`；仍为空才生成 32 字节密码学安全随机数，以无填充 Base64URL 保存（43 字符）。已有的空 `TOKEN=` 会被填入，没有该项则追加。其他配置和注释保持原样，不再使用单独的 Token 文件。
 
-本地直接运行时，先将 `.env` 中的变量导出到进程环境，并在该文件所在目录启动；程序使用当前工作目录的 `.mirror-token`。程序不会自动加载 `.env`。外部反向代理或 CDN 的访问日志也应关闭该入口的完整 URL 记录或脱敏 token。
+启动后在 `.env` 中查看 `TOKEN`，服务日志不会打印它。普通重启时，即使容器环境变量仍为空，也会读取已写回的值；重建容器时，`env_file` 会直接加载这个值。非空的进程环境变量 `TOKEN` 优先，不读取或修改 `.env`。
+
+Docker 的 `env_file` / `--env-file` 仅传变量，不能写回文件，所以部署示例还将同一份 `.env` 可写挂载到 `/config/.env`。宿主机文件保留当前用户所有权，使用 `sudo chgrp 65532 .env` 和 `chmod 660 .env` 允许容器组读写。程序保留已有文件权限和挂载文件的 inode；本地新建文件默认权限为 `0600`。文件不可读写、Token 无效或存在重复 `TOKEN` 配置时会启动报错。每份 `.env` 仅供一个运行中的实例使用。
+
+更换 Token：停止代理，将 `.env` 的 `TOKEN` 改为新值，或清空让程序重新生成，然后重建容器（单纯 restart 会保留旧环境变量）。再更新客户端的 mirror URL。不要在运行时删除或替换挂载文件。
+
+本地直接运行时，先将 `.env` 中的其他变量导出到进程环境，并在该文件所在目录启动。程序只会读取和保存 `.env` 中的 `TOKEN`，其他配置仍从进程环境读取。外部反向代理或 CDN 的访问日志应对 mirror URL 中的 Token 脱敏。
 
 ## 配置
 
-优先级：显式环境变量 > `CONFIG_FILE` JSON > 默认值。显式空环境变量也会覆盖 JSON。认证必须启用，用户名、密码不能为空或使用示例占位值。
+所有配置统一写在 `.env` 中，由 Compose 的 `env_file` 或 `docker run --env-file .env` 传入。优先级：显式环境变量 > 默认值；显式空值也会覆盖默认值。代理认证始终启用，用户名、密码不能为空或使用示例占位值。常用配置模板见 [.env.example](.env.example)，其余可选项按需添加。
 
 | 环境变量 | 默认值 / 用途 |
 | --- | --- |
-| `TOKEN` | 可选；优先于 `.mirror-token`，用于 Docker Hub 公共 mirror |
+| `TOKEN` | 可选；留空自动生成并写回 `.env`，用于 Docker Hub 公共 mirror |
 | `PROXY_DOMAIN` | auto/cloudflare 模式必填，单个域名，不含协议或端口 |
 | `PROXY_USERNAME` / `PROXY_PASSWORD` | 代理登录账号密码 |
 | `TLS_MODE` | `auto`、`manual` 或 `cloudflare`；配置完整证书路径时默认 manual，否则 auto |
@@ -110,37 +116,47 @@ docker run --rm -p 8080:80 x.example.com/nginx:latest
 | `ACME_ACCEPT_TOS` | `true`，自动 HTTPS 要求接受 Let's Encrypt 服务条款 |
 | `ACME_EMAIL` | 可选，ACME 联系邮箱 |
 | `ACME_DIRECTORY_URL` | 留空使用 Let's Encrypt 生产目录 |
-| `CONFIG_FILE` | 可选，容器内 JSON 路径；未设置时不读取 JSON |
+| `GHCR_USERNAME` / `GHCR_TOKEN` | GHCR 用户名和 Token；均为空时匿名访问 |
+| `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` | Docker Hub 用户名和访问 Token |
+| `QUAY_USERNAME` / `QUAY_TOKEN` | Quay 用户名和访问 Token |
+| `REGISTRY_<NAME>_DOMAIN` | 自定义仓库域名，可带端口 |
+| `REGISTRY_<NAME>_UPSTREAM` | 默认 `https://` 加对应 DOMAIN |
+| `REGISTRY_<NAME>_USERNAME` / `REGISTRY_<NAME>_PASSWORD` | 自定义仓库账号和密码或 Token；均为空时匿名访问 |
 
 ### 私有镜像与自定义仓库
 
-创建 `config.json`，只填写需要覆盖或新增的条目。例如为 GHCR 配置凭据，并添加自定义仓库：
+私有 GHCR 镜像只需在 `.env` 填写：
 
-```json
-{
-  "registries": {
-    "ghcr.io": {
-      "upstream": "https://ghcr.io",
-      "username": "your-github-user",
-      "password_env": "GHCR_TOKEN"
-    },
-    "registry.example.com:5000": {
-      "upstream": "https://registry.example.com:5000"
-    }
-  }
-}
+```dotenv
+GHCR_USERNAME=your-github-user
+GHCR_TOKEN=your-github-token
 ```
 
-将 `GHCR_TOKEN` 加入 `.env`，并在启动命令的镜像名之前增加：
+使用具有 `read:packages` 权限的 GitHub personal access token (classic)，Token 所属账号须有目标包的读取权限；组织要求 SSO 时，还需授权该 Token。用户名填写 Token 所属个人账号，即使镜像位于组织名下。参见 [GitHub 官方认证说明](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-with-a-personal-access-token-classic)。
+
+重建代理容器后，客户端继续使用 `PROXY_USERNAME` / `PROXY_PASSWORD` 登录：
 
 ```sh
--e CONFIG_FILE=/etc/oci-pull-proxy/config.json \
--v "$(pwd)/config.json:/etc/oci-pull-proxy/config.json:ro"
+docker compose up -d --force-recreate
+docker login x.example.com
+docker pull x.example.com/ghcr.io/your-org/private-image:latest
 ```
 
-确保文件存在且 UID 65532 可读。`username` 与 `password_env` 必须成对配置，密码变量不能为空。客户端密码不会转发上游，上游凭据由服务端独立配置。
+Cloudflare 部署的 Compose 命令加 `-f compose.cloudflare.yaml`。`docker run` 部署需按原启动参数重建，继续使用 `--env-file .env`。沿用现有 `.env` 挂载即可。客户端密码不会转发上游，上游凭据由服务端独立配置。各仓库的用户名和 Token/密码必须同时填写或同时留空。
 
-仓库键必须是小写域名或域名加端口（1–65535），也支持 `localhost`；上游 URL 必须使用 HTTPS。默认键为 `docker.io`、`ghcr.io`、`quay.io`，其中 Docker Hub 上游为 `https://registry-1.docker.io`。JSON 条目覆盖同名默认条目，其他默认条目保留。完整 JSON 示例见 [config.example.json](config.example.json)。
+自定义仓库也直接写入 `.env`，例如：
+
+```dotenv
+REGISTRY_CORP_DOMAIN=registry.example.com:5000
+REGISTRY_CORP_USERNAME=robot
+REGISTRY_CORP_PASSWORD=your-registry-token
+REGISTRY_LAB_DOMAIN=lab.example.com
+REGISTRY_LAB_UPSTREAM=https://backend.example.com
+```
+
+程序自动识别 `REGISTRY_<名称>_*` 配置，无需额外列表。`CORP`、`LAB` 只是配置组名称，须以大写字母开头，只包含大写字母、数字和下划线。拉取时使用实际域名，例如 `x.example.com/registry.example.com:5000/team/image:latest`。没有填写 `UPSTREAM` 时默认访问 `https://` 加 `DOMAIN`；没有填写凭据时匿名访问。
+
+域名必须小写，可附加端口（1–65535），也支持 `localhost`；上游 URL 必须使用 HTTPS。重复域名会报错。内置仓库固定使用官方地址，通过 `GHCR_*`、`DOCKERHUB_*`、`QUAY_*` 配置凭据。全部留空的自定义配置组会被忽略；填写任一非空参数时须提供 DOMAIN。
 
 ### 手动证书
 
@@ -179,18 +195,6 @@ docker rm oci-pull-proxy
 
 重新执行原启动命令，复用相同配置、模式和卷名。修改 `.env` 后同样需要重建，单纯 `docker restart` 不会载入新的环境变量。Compose 部署使用 `docker compose pull && docker compose up -d`，Cloudflare 模式两条命令都加 `-f compose.cloudflare.yaml`。
 
-旧版 `registries` 配置键须迁移，否则启动报错：
-
-| 旧键 | 新键 |
-| --- | --- |
-| `dockerhub` | `docker.io` |
-| `ghcr` | `ghcr.io` |
-| `quay` | `quay.io` |
-
-自定义短键改为实际仓库域名，保留 `upstream`、`username` 和 `password_env` 字段。同步更新脚本与 Compose 镜像名：`代理域名/dockerhub/library/nginx:latest` 改为 `代理域名/nginx:latest`，`代理域名/ghcr/team/image:tag` 改为 `代理域名/ghcr.io/team/image:tag`。
-
-旧短前缀不再是别名，`ghcr/team/image` 会按 Docker Hub 仓库路径处理。现有缓存无需主动删除，上游 URL 和规范路径未变的缓存可继续复用。
-
 ## 排障
 
 ```sh
@@ -223,6 +227,6 @@ go vet ./...
 go build ./...
 ```
 
-测试使用本地模拟上游与 CA，证书失败重试测试约需一分钟。容器验证使用 `docker build -t oci-pull-proxy:verification .` 和 `python3 scripts/container-smoke.py`。真实 mirror 验收运行 `python3 scripts/mirror-smoke.py`：创建临时特权 Docker-in-Docker daemon，只连接内部测试网络，禁止直接回退 Docker Hub；测试 HTTPS token 拉取和容器重建后的 token 持久化，结束后清理容器与网络，不更改宿主机 daemon 配置。
+测试使用本地模拟上游与 CA，证书失败重试测试约需一分钟。容器验证使用 `docker build -t oci-pull-proxy:verification .` 和 `python3 scripts/container-smoke.py`。真实 mirror 验收运行 `python3 scripts/mirror-smoke.py`：创建临时特权 Docker-in-Docker daemon，只连接内部测试网络，禁止直接回退 Docker Hub；测试 HTTPS token 拉取、Token 写回 `.env` 及容器重建后的持久化，结束后清理容器与网络，不更改宿主机 daemon 配置。
 
 推送 main 后，GitHub Actions 通过 Go 检查及容器测试才会发布 `latest` 和 `sha-完整提交哈希` 镜像；推送 `v1.2.3` 标签发布 `1.2.3`，不改动 `latest`。首次发布需在 GHCR 包设置中设为 Public，才能匿名拉取。需要可重复部署时固定镜像 digest。

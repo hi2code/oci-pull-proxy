@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -49,7 +48,7 @@ func New(cfg config.Config) (*Proxy, error) {
 		}
 		p.upstreams[name] = u
 		if rc.Username != "" {
-			p.upstreamCreds[name] = credentials{rc.Username, os.Getenv(rc.PasswordEnv)}
+			p.upstreamCreds[name] = credentials{rc.Username, rc.Password}
 		}
 	}
 	publicConfig := cfg

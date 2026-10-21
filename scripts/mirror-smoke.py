@@ -38,9 +38,11 @@ def wait_for(args):
 
 
 def read_token():
-    archive = subprocess.check_output(["docker", "cp", proxy + ":/config/.mirror-token", "-"])
+    archive = subprocess.check_output(["docker", "cp", proxy + ":/config/.env", "-"])
     with tarfile.open(fileobj=io.BytesIO(archive)) as files:
-        return files.extractfile(files.getmembers()[0]).read().decode()
+        text = files.extractfile(files.getmembers()[0]).read().decode()
+        assert text.startswith("# keep this comment\n")
+        return next((line.split("=", 1)[1] for line in text.splitlines() if line.startswith("TOKEN=")), "")
 
 
 try:
@@ -54,13 +56,13 @@ try:
                         "-keyout", str(root / "key.pem"), "-out", str(root / "cert.pem")],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         (root / "key.pem").chmod(0o644)  # disposable test key only
-        token_file = root / ".mirror-token"
-        token_file.touch()
+        token_file = root / ".env"
+        token_file.write_text("# keep this comment\nTOKEN=\n")
         docker("run", "--rm", "--entrypoint", "sh", "-v", f"{root}:/fixture", dind_image,
-               "-c", "chown 65532:65532 /fixture/.mirror-token && chmod 600 /fixture/.mirror-token")
+               "-c", "chown 65532:65532 /fixture/.env && chmod 600 /fixture/.env")
         for iteration in range(2):
             docker("create", "--name", proxy, "--read-only", "--network", "bridge",
-                   "-v", f"{root}:/fixture:ro", "--mount", f"type=bind,src={token_file},dst=/config/.mirror-token",
+                   "-v", f"{root}:/fixture:ro", "--mount", f"type=bind,src={token_file},dst=/config/.env",
                    "--tmpfs", "/data/cache:uid=65532,gid=65532,mode=0700",
                    "-e", "PROXY_USERNAME=test", "-e", "PROXY_PASSWORD=smoke-password",
                    "-e", "TLS_MODE=manual", "-e", "TLS_CERT=/fixture/cert.pem", "-e", "TLS_KEY=/fixture/key.pem", image)
@@ -93,7 +95,7 @@ try:
         assert "sha256:" in result
         print(result)
         assert token not in docker("logs", proxy), "token leaked to service logs"
-        print("PASS: persisted token survived recreation; real Docker pulled via HTTPS token mirror without Hub fallback")
+        print("PASS: TOKEN in .env survived recreation; real Docker pulled via HTTPS token mirror without Hub fallback")
 except subprocess.CalledProcessError as exc:
     # Do not print daemon command arguments or logs: they contain the disposable token.
     print("Docker integration command failed (exit %s)" % exc.returncode, file=sys.stderr)

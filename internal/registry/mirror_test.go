@@ -20,8 +20,7 @@ func TestMirrorIsolationAndAuthorization(t *testing.T) {
 	c.Auth.Enabled = true
 	c.Auth.Username = "user"
 	c.Auth.Password = "password"
-	c.Registries = map[string]config.RegistryConfig{"docker.io": {Upstream: "https://private.example", Username: "private", PasswordEnv: "PRIVATE_PASSWORD"}}
-	t.Setenv("PRIVATE_PASSWORD", "private-secret")
+	c.Registries = map[string]config.RegistryConfig{"docker.io": {Upstream: "https://private.example", Username: "private", Password: "private-secret"}}
 	p, err := New(c)
 	if err != nil {
 		t.Fatal(err)
@@ -100,8 +99,7 @@ func TestMirrorBearerAndSameUpstreamCacheIsolation(t *testing.T) {
 	c.Auth.Enabled = true
 	c.Auth.Username = "u"
 	c.Auth.Password = "p"
-	c.Registries = map[string]config.RegistryConfig{"docker.io": {Upstream: "https://registry-1.docker.io", Username: "private-user", PasswordEnv: "PRIVATE_PASSWORD"}}
-	t.Setenv("PRIVATE_PASSWORD", "private-password")
+	c.Registries = map[string]config.RegistryConfig{"docker.io": {Upstream: "https://registry-1.docker.io", Username: "private-user", Password: "private-password"}}
 	p, err := New(c)
 	if err != nil {
 		t.Fatal(err)

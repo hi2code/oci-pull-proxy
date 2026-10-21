@@ -1,0 +1,6 @@
+.env
+config.json
+certs/*
+data/*
+!certs/.gitkeep
+!data/.gitkeep

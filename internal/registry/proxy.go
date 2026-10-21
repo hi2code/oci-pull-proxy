@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"example.com/oci-pull-proxy/internal/config"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -39,6 +41,8 @@ func New(cfg config.Config) (*Proxy, error) {
 		if req.URL.Scheme != "https" {
 			return errors.New("upstream redirect must use HTTPS")
 		}
+		// Blob redirects carry signed query strings; log only scheme/host/path.
+		logf("跟随上游重定向（第 %d 跳）：%s://%s%s", len(via), req.URL.Scheme, req.URL.Host, req.URL.Path)
 		return nil
 	}}, cache: cache.New(cfg.Cache.Directory, cfg.Cache.MaxSizeGB*1024*1024*1024), upstreams: map[string]*url.URL{}, upstreamCreds: map[string]credentials{}}
 	for name, rc := range cfg.Registries {
@@ -66,7 +70,28 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	p.handle(w, r)
 }
-func logf(f string, a ...any) { fmt.Printf(time.Now().Format(time.RFC3339)+" "+f+"\n", a...) }
+
+var logf = func(f string, a ...any) { fmt.Printf(time.Now().Format(time.RFC3339)+" "+f+"\n", a...) }
+
+// redactPath hides the mirror token while keeping the rest of the route readable.
+func redactPath(p string) string {
+	if !strings.HasPrefix(p, "/m/") {
+		return p
+	}
+	rest := p[len("/m/"):]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return "/m/<token>" + rest[i:]
+	}
+	return "/m/<token>"
+}
+
+// clientIP is best effort: RemoteAddr is the TCP peer, not a forwarded header.
+func clientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
 func registryNames(m map[string]*url.URL) []string {
 	a := make([]string, 0, len(m))
 	for k := range m {
@@ -84,10 +109,12 @@ func securityHeaders(next http.Handler) http.Handler {
 
 func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		logf("拒绝请求：方法不允许：%s %s 来自 %s", r.Method, redactPath(r.URL.Path), clientIP(r))
 		http.Error(w, "pull-only proxy: method not allowed", 405)
 		return
 	}
 	if p.cfg.Auth.Enabled && !p.authorized(r) {
+		logf("拒绝请求：代理认证失败：%s %s 来自 %s（客户端需 docker login %s）", r.Method, redactPath(r.URL.Path), clientIP(r), r.Host)
 		w.Header().Set("WWW-Authenticate", `Basic realm="oci-pull-proxy", charset="UTF-8"`)
 		http.Error(w, "authentication required", 401)
 		return
@@ -99,11 +126,13 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	name, upPath, err := parseRoute(r.URL.Path)
 	if err != nil {
+		logf("拒绝请求：路由不合法：%s: %v", redactPath(r.URL.Path), err)
 		http.Error(w, err.Error(), 404)
 		return
 	}
 	upstream, ok := p.upstreams[name]
 	if !ok {
+		logf("拒绝请求：未配置的上游 %q：%s（已配置：%s）", name, redactPath(r.URL.Path), strings.Join(registryNames(p.upstreams), ", "))
 		http.Error(w, "unknown upstream", 404)
 		return
 	}
@@ -113,9 +142,11 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	cacheable := r.Method == http.MethodGet && digestRef.MatchString(upPath)
 	canStore := cacheable && r.Header.Get("Range") == ""
 	key := cache.Key(p.cacheNamespace+upstream.String(), upPath+"?"+r.URL.RawQuery)
+	logf("代理请求：%s %s -> %s%s（客户端 %s）", r.Method, redactPath(r.URL.Path), upstream.Host, upPath, clientIP(r))
 	if cacheable {
 		if f, meta, e := p.cache.Open(key); e == nil {
 			defer f.Close()
+			logf("缓存命中：%s", upPath)
 			for k, v := range meta.Headers {
 				w.Header().Set(k, v)
 			}
@@ -123,21 +154,31 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 			http.ServeContent(w, r, filepath.Base(key), time.Time{}, f)
 			return
 		}
+		logf("缓存未命中：%s", upPath)
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), nil)
 	if err != nil {
+		logf("构造上游请求失败：%s: %v", target.Redacted(), err)
 		http.Error(w, "bad request", 400)
 		return
 	}
 	copyRequestHeaders(req.Header, r.Header)
 	if c, ok := p.upstreamCreds[name]; ok {
 		req.SetBasicAuth(c.username, c.password)
+		logf("使用上游凭据：%s 用户 %s", name, c.username)
 	}
+	start := time.Now()
 	resp, err := p.doUpstream(req, name)
 	if err != nil {
-		logf("upstream %s %s: %v", name, upPath, err)
+		logf("上游失败：%s %s %s: %v（已耗时 %s）", name, r.Method, target.Redacted(), err, time.Since(start).Round(time.Millisecond))
 		http.Error(w, "upstream request failed", 502)
 		return
+	}
+	logf("上游响应：%s %s %s -> %d（%s，已耗时 %s）", name, r.Method, target.Redacted(), resp.StatusCode, resp.Header.Get("Content-Type"), time.Since(start).Round(time.Millisecond))
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), resp.Body))
+		logf("上游拒绝：%s %s 返回 %d，响应体：%s", name, target.Redacted(), resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	defer resp.Body.Close()
 	if digestRef.MatchString(upPath) && resp.Header.Get("Docker-Content-Digest") == "" {
@@ -233,6 +274,7 @@ func (p *Proxy) doUpstream(req *http.Request, name string) (*http.Response, erro
 		return resp, nil
 	}
 	scheme, params := parseChallenge(resp.Header.Get("WWW-Authenticate"))
+	logf("上游要求认证：%s %s -> 401，挑战 %s realm=%s scope=%q", name, req.URL.Redacted(), scheme, params["realm"], params["scope"])
 	if scheme == "bearer" && params["realm"] != "" {
 		_ = resp.Body.Close()
 		token, e := p.fetchToken(req.Context(), params, name)
@@ -245,6 +287,7 @@ func (p *Proxy) doUpstream(req *http.Request, name string) (*http.Response, erro
 		}
 		retry.Header = req.Header.Clone()
 		retry.Header.Set("Authorization", "Bearer "+token)
+		logf("使用上游 bearer token 重试：%s %s", name, req.URL.Redacted())
 		return p.client.Do(retry)
 	}
 	if scheme == "basic" {
@@ -256,8 +299,10 @@ func (p *Proxy) doUpstream(req *http.Request, name string) (*http.Response, erro
 			}
 			retry.Header = req.Header.Clone()
 			retry.SetBasicAuth(c.username, c.password)
+			logf("使用上游 basic 凭据重试：%s 用户 %s", name, c.username)
 			return p.client.Do(retry)
 		}
+		logf("上游要求 basic 凭据，但未配置 %s 用户名/密码", name)
 	}
 	return resp, nil
 }
@@ -329,13 +374,17 @@ func (p *Proxy) fetchToken(ctx context.Context, ch map[string]string, name strin
 	}
 	if c, ok := p.upstreamCreds[name]; ok {
 		req.SetBasicAuth(c.username, c.password)
+		logf("向上游 token 服务发送 %s 凭据：用户 %s", name, c.username)
 	}
+	logf("获取上游 token：%s %s", name, u.Redacted())
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		logf("上游 token 被拒绝：%s 返回 %s，响应体：%s", name, resp.Status, strings.TrimSpace(string(body)))
 		return "", fmt.Errorf("token endpoint returned %s", resp.Status)
 	}
 	var result struct {
@@ -346,9 +395,11 @@ func (p *Proxy) fetchToken(ctx context.Context, ch map[string]string, name strin
 		return "", err
 	}
 	if result.Token != "" {
+		logf("上游 token 获取成功：%s（长度 %d）", name, len(result.Token))
 		return result.Token, nil
 	}
 	if result.AccessToken != "" {
+		logf("上游 token 获取成功：%s（长度 %d）", name, len(result.AccessToken))
 		return result.AccessToken, nil
 	}
 	return "", fmt.Errorf("token endpoint returned no token")

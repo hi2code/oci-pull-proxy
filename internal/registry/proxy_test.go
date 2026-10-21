@@ -4,6 +4,7 @@ import (
 	"context"
 	"example.com/oci-pull-proxy/internal/cache"
 	"example.com/oci-pull-proxy/internal/config"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -334,5 +335,87 @@ func TestDockerHubTokenHostAllowance(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func captureLogs(t *testing.T) *[]string {
+	t.Helper()
+	lines := &[]string{}
+	orig := logf
+	logf = func(f string, a ...any) { *lines = append(*lines, fmt.Sprintf(f, a...)) }
+	t.Cleanup(func() { logf = orig })
+	return lines
+}
+
+func TestLogsExplainAuthFailureWithoutLeakingPassword(t *testing.T) {
+	lines := captureLogs(t)
+	var cfg config.Config
+	cfg.Auth.Enabled = true
+	cfg.Auth.Username = "alice"
+	cfg.Auth.Password = "top-secret-pw"
+	p := &Proxy{cfg: cfg, upstreams: map[string]*url.URL{}}
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v2/library/alpine/manifests/latest", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	joined := strings.Join(*lines, "\n")
+	if !strings.Contains(joined, "代理认证失败") || !strings.Contains(joined, "docker login") {
+		t.Fatalf("missing auth hint: %q", joined)
+	}
+	if strings.Contains(joined, "top-secret-pw") {
+		t.Fatalf("password leaked: %q", joined)
+	}
+}
+
+func TestLogsRedactMirrorTokenAndBearerTokens(t *testing.T) {
+	lines := captureLogs(t)
+	cfg := config.Config{Token: "server-side-token"}
+	p := &Proxy{cfg: cfg, upstreams: map[string]*url.URL{}}
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/m/client-supplied-token/v2/library/alpine/manifests/latest", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	joined := strings.Join(*lines, "\n")
+	if !strings.Contains(joined, "Token 无效") {
+		t.Fatalf("missing mirror token hint: %q", joined)
+	}
+	for _, secret := range []string{"client-supplied-token", "server-side-token"} {
+		if strings.Contains(joined, secret) {
+			t.Fatalf("mirror token leaked: %q", joined)
+		}
+	}
+}
+
+func TestLogsUpstreamTokenRejection(t *testing.T) {
+	lines := captureLogs(t)
+	token := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}`)
+	}))
+	defer token.Close()
+	tu, _ := url.Parse(token.URL)
+	reg := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="`+token.URL+`/token",service="ghcr.io",scope="repository:hi2code/missing:pull"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer reg.Close()
+	u, _ := url.Parse(reg.URL)
+	p := &Proxy{cfg: config.Config{}, client: reg.Client(), cache: cache.New(t.TempDir(), 1<<20),
+		upstreams: map[string]*url.URL{"ghcr.io": u}, upstreamCreds: map[string]credentials{}}
+	rec := httptest.NewRecorder()
+	p.handle(rec, httptest.NewRequest(http.MethodHead, "/v2/ghcr.io/hi2code/missing/manifests/v0.10.2", nil))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	joined := strings.Join(*lines, "\n")
+	for _, want := range []string{"token 被拒绝", "repository:hi2code/missing:pull", "上游失败"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in logs: %q", want, joined)
+		}
+	}
+	if !strings.Contains(joined, token.URL) {
+		t.Fatalf("token endpoint host should be visible: %q, %q", joined, tu)
 	}
 }

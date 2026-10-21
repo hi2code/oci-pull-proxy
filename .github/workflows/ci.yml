@@ -54,12 +54,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate Compose configurations
-        run: |
-          cp .env.example .env
-          cp deploy/.env.example deploy/.env
-          docker compose --env-file .env.example config --no-env-resolution --quiet
-          docker compose -f deploy/compose.yaml --env-file deploy/.env.example config --no-env-resolution --quiet
       - name: Build container
         run: docker build --pull --build-arg VERSION="${GITHUB_SHA}" -t oci-pull-proxy:verification .
       - name: Smoke test container

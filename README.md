@@ -42,7 +42,6 @@ docker logs -f oci-pull-proxy
 
 看到“HTTPS 已就绪”后即可使用。`oci-cache` 保存镜像缓存，`oci-acme` 保存证书和 ACME 账户；更新时复用原卷，不要删除证书卷。同一组目录只供一个实例使用；自定义宿主机目录需保证 UID/GID 65532 可写。
 
-也可在仓库根目录创建 `.env`、按上述步骤设置 `.env` 权限后运行 `docker compose up -d`。Compose 的卷名带项目名前缀，从 `docker run` 切换时需明确复用原卷。
 
 ## 拉取镜像
 
@@ -53,7 +52,7 @@ sudo docker pull x.example.com/nginx:latest
 sudo docker pull x.example.com/ghcr.io/pgdogdev/pgdog:sha256-dec8fc0568a1e55a01ff77fac2944aa92801db7bdccf313382c417e4d191e434
 ```
 
-登录时使用 `.env` 中的账号密码。拉取后的本地镜像名保留代理域名前缀，`docker run` 和 Compose 也使用该名称，例如：
+登录时使用 `.env` 中的账号密码。拉取后的本地镜像名保留代理域名前缀，`docker run` 也使用该名称，例如：
 
 ```sh
 docker run --rm -p 8080:80 x.example.com/nginx:latest
@@ -91,9 +90,9 @@ TOKEN=
 
 未配置或为空时，程序先读取挂载的 `.env`，复用其中已有的非空 `TOKEN`；仍为空才生成 32 字节密码学安全随机数，以无填充 Base64URL 保存（43 字符）。已有的空 `TOKEN=` 会被填入，没有该项则追加。其他配置和注释保持原样，不再使用单独的 Token 文件。
 
-启动后在 `.env` 中查看 `TOKEN`，服务日志不会打印它。普通重启时，即使容器环境变量仍为空，也会读取已写回的值；重建容器时，`env_file` 会直接加载这个值。非空的进程环境变量 `TOKEN` 优先，不读取或修改 `.env`。
+启动后在 `.env` 中查看 `TOKEN`，服务日志不会打印它。普通重启时，即使容器环境变量仍为空，也会读取已写回的值；重建容器时，`--env-file .env` 会直接加载这个值。非空的进程环境变量 `TOKEN` 优先，不读取或修改 `.env`。
 
-Docker 的 `env_file` / `--env-file` 仅传变量，不能写回文件，所以部署示例还将同一份 `.env` 可写挂载到 `/config/.env`。宿主机文件保留当前用户所有权，使用 `sudo chgrp 65532 .env` 和 `chmod 660 .env` 允许容器组读写。程序保留已有文件权限和挂载文件的 inode；本地新建文件默认权限为 `0600`。文件不可读写、Token 无效或存在重复 `TOKEN` 配置时会启动报错。每份 `.env` 仅供一个运行中的实例使用。
+Docker 的 `--env-file` 仅传变量，不能写回文件，所以部署示例还将同一份 `.env` 可写挂载到 `/config/.env`。宿主机文件保留当前用户所有权，使用 `sudo chgrp 65532 .env` 和 `chmod 660 .env` 允许容器组读写。程序保留已有文件权限和挂载文件的 inode；本地新建文件默认权限为 `0600`。文件不可读写、Token 无效或存在重复 `TOKEN` 配置时会启动报错。每份 `.env` 仅供一个运行中的实例使用。
 
 更换 Token：停止代理，将 `.env` 的 `TOKEN` 改为新值，或清空让程序重新生成，然后重建容器（单纯 restart 会保留旧环境变量）。再更新客户端的 mirror URL。不要在运行时删除或替换挂载文件。
 
@@ -101,7 +100,7 @@ Docker 的 `env_file` / `--env-file` 仅传变量，不能写回文件，所以�
 
 ## 配置
 
-所有配置统一写在 `.env` 中，由 Compose 的 `env_file` 或 `docker run --env-file .env` 传入。优先级：显式环境变量 > 默认值；显式空值也会覆盖默认值。代理认证始终启用，用户名、密码不能为空或使用示例占位值。常用配置模板见 [.env.example](.env.example)，其余可选项按需添加。
+所有配置统一写在 `.env` 中，由 `docker run --env-file .env` 传入。优先级：显式环境变量 > 默认值；显式空值也会覆盖默认值。代理认证始终启用，用户名、密码不能为空或使用示例占位值。常用配置模板见 [.env.example](.env.example)，其余可选项按需添加。
 
 | 环境变量 | 默认值 / 用途 |
 | --- | --- |
@@ -137,12 +136,11 @@ GHCR_TOKEN=your-github-token
 重建代理容器后，客户端继续使用 `PROXY_USERNAME` / `PROXY_PASSWORD` 登录：
 
 ```sh
-docker compose up -d --force-recreate
 docker login x.example.com
 docker pull x.example.com/ghcr.io/your-org/private-image:latest
 ```
 
-Cloudflare 部署的 Compose 命令加 `-f compose.cloudflare.yaml`。`docker run` 部署需按原启动参数重建，继续使用 `--env-file .env`。沿用现有 `.env` 挂载即可。客户端密码不会转发上游，上游凭据由服务端独立配置。各仓库的用户名和 Token/密码必须同时填写或同时留空。
+修改 `.env` 后，按下方“更新与重建”步骤停止并删除旧容器，重新执行对应模式的 `docker run` 命令，继续使用 `--env-file .env`。沿用现有 `.env` 挂载即可。客户端密码不会转发上游，上游凭据由服务端独立配置。各仓库的用户名和 Token/密码必须同时填写或同时留空。
 
 自定义仓库也直接写入 `.env`，例如：
 
@@ -179,11 +177,11 @@ TLS_KEY=/certs/privkey.pem
 3. 源站开放 TCP 80，允许出站 HTTPS；应用必须能看到 Cloudflare 的实际 TCP 来源。
 4. 使用上面的启动命令，增加 `-e TLS_MODE=cloudflare`，删除 `-p 443:8443` 和 `-v oci-acme:/data/acme`；从 `.env` 删除 `TLS_CERT`、`TLS_KEY`。
 
-使用 Compose 时执行 `docker compose -f compose.cloudflare.yaml up -d`。已有容器需先停止并重建，沿用原缓存卷，保留原证书卷以便回退；切回 auto/manual 时同步恢复回源方式和端口映射。
+已有容器需先停止并重建，沿用原缓存卷，保留原证书卷以便回退；切回 auto/manual 时同步恢复回源方式和端口映射。
 
 程序仅放行内置 Cloudflare 网段，并检查 Host 与 HTTPS 转发头，原镜像接口仍要求账号密码，`/m/…` 入口要求 token。本机直连（包括健康检查）返回 403；额外反向代理或改写来源地址的网络也可能被拒绝。通过公网域名访问 `/readyz` 验证就绪。Cloudflare 到源站的 HTTP 包含认证信息，使用前需接受这一网络边界，并确认套餐的大文件、流量和超时限制适合实际镜像。
 
-## 更新与迁移
+## 更新与重建
 
 使用 `docker run` 部署时，先拉取新镜像，再重建容器：
 
@@ -193,7 +191,7 @@ docker stop -t 30 oci-pull-proxy
 docker rm oci-pull-proxy
 ```
 
-重新执行原启动命令，复用相同配置、模式和卷名。修改 `.env` 后同样需要重建，单纯 `docker restart` 不会载入新的环境变量。Compose 部署使用 `docker compose pull && docker compose up -d`，Cloudflare 模式两条命令都加 `-f compose.cloudflare.yaml`。
+重新执行原启动命令，复用相同配置、模式和卷名。修改 `.env` 后同样需要重建，单纯 `docker restart` 不会载入新的环境变量。
 
 ## 排障
 
@@ -206,10 +204,49 @@ curl -fsS https://x.example.com/readyz
 
 `check` 检查本地配置、文件与目录权限，不代表 DNS 或公网访问正常。容器无法启动时，可用原环境变量及卷运行临时容器，在镜像名后追加 `check`，无需映射端口。
 
+每个 `/v2/`、`/m/` 请求会输出多行日志：访问行（方法、路径、状态码、字节数、耗时）加上代理决策行（认证、路由、缓存、上游挑战、token、上游响应）。判断卡在哪一步看最后一行，不要只看 Docker 客户端的提示。密码、bearer token、mirror Token 均不会写入日志（只记录长度），mirror URL 中的 Token 记录为 `<token>`，上游重定向只记录 scheme/host/path（不含签名参数），`/healthz`、`/readyz` 仅在非 2xx 时记录。
+
+未登录代理时（客户端只会看到 `not found`）：
+
+```
+2026-10-22T00:59:53+08:00 拒绝请求：代理认证失败：GET /v2/ghcr.io/owner/image/manifests/v1 来自 1.2.3.4（客户端需 docker login x.example.com）
+2026-10-22T00:59:53+08:00 GET /v2/ghcr.io/owner/image/manifests/v1 401 24 0s
+```
+
+已登录但上游拒绝：
+
+```
+2026-10-22T01:00:02+08:00 代理请求：GET /v2/ghcr.io/owner/image/manifests/v1 -> ghcr.io/v2/owner/image/manifests/v1（客户端 1.2.3.4）
+2026-10-22T01:00:02+08:00 上游要求认证：ghcr.io https://ghcr.io/v2/owner/image/manifests/v1 -> 401，挑战 bearer realm=https://ghcr.io/token scope="repository:owner/image:pull"
+2026-10-22T01:00:02+08:00 获取上游 token：ghcr.io https://ghcr.io/token?scope=repository%3Aowner%2Fimage%3Apull&service=ghcr.io
+2026-10-22T01:00:02+08:00 上游 token 被拒绝：ghcr.io 返回 401 Unauthorized，响应体：{"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}
+2026-10-22T01:00:02+08:00 上游失败：ghcr.io GET https://ghcr.io/v2/owner/image/manifests/v1: token endpoint returned 401 Unauthorized（已耗时 3.3s）
+2026-10-22T01:00:02+08:00 GET /v2/ghcr.io/owner/image/manifests/v1 502 24 3.3s
+```
+
+正常拉取（含缓存命中）：
+
+```
+2026-10-22T01:00:02+08:00 代理请求：GET /v2/library/alpine/manifests/latest -> registry-1.docker.io/v2/library/alpine/manifests/latest（客户端 1.2.3.4）
+2026-10-22T01:00:02+08:00 上游 token 获取成功：docker.io（长度 2698）
+2026-10-22T01:00:02+08:00 上游响应：docker.io GET https://registry-1.docker.io/v2/library/alpine/manifests/latest -> 200（application/vnd.oci.image.index.v1+json，已耗时 5.8s）
+2026-10-22T01:00:02+08:00 GET /v2/library/alpine/manifests/latest 200 9218 5.8s
+2026-10-22T01:00:05+08:00 缓存命中：/v2/library/alpine/blobs/sha256:…
+```
+
+| 日志 | 含义 |
+| --- | --- |
+| 没有对应请求行 | 请求没到代理：DNS、Cloudflare、端口或 `--read-only` 下的监听配置 |
+| `拒绝请求：代理认证失败` + `401` | 客户端没登录代理或密码错误；Docker 显示成 `not found` |
+| `拒绝请求：路由不合法` / `未配置的上游` + `404` | 镜像路径不合法，或显式仓库域名未配置 |
+| `上游 token 被拒绝` / `上游失败` + `502` | 请求已转发，上游或 token 服务拒绝；日志里有上游状态码和响应体前 512 字节 |
+| `上游响应 … -> 404` | 上游确实没有该仓库或 tag |
+| `跟随上游重定向` | 下载 blob 时的对象存储跳转，正常现象 |
+
 | 现象 | 检查项 |
 | --- | --- |
 | 证书获取或续期失败 | 域名 A/AAAA、TCP 80/443、防火墙、出站 HTTPS、CAA 和服务器时间；不要删除证书卷 |
-| 401 | 代理登录账号密码；私有镜像另需配置上游凭据 |
+| 401 | 代理登录账号密码；私有镜像另需配置上游凭据。Docker 会把这个 401 显示成 `not found`，别误判为镜像不存在 |
 | 403（Cloudflare 模式） | 是否经 Cloudflare HTTPS 访问，实际 TCP 来源、Host 和转发协议是否正确 |
 | 404 | 镜像路径是否正确，显式仓库域名是否已配置 |
 | 502 | 日志中的上游网络、地址或 token 服务错误 |

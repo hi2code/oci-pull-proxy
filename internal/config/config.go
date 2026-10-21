@@ -13,6 +13,7 @@ import (
 )
 
 type Config struct {
+	Token  string `json:"-"`
 	Server struct {
 		Listen     string `json:"listen"`
 		HTTPListen string `json:"http_listen"`
@@ -47,6 +48,7 @@ type RegistryConfig struct {
 
 func Load() (Config, error) {
 	var c Config
+	c.Token = os.Getenv("TOKEN")
 	c.Server.Listen = ":8443"
 	c.Server.HTTPListen = ":8080"
 	c.Auth.Enabled = true
@@ -99,6 +101,9 @@ func Load() (Config, error) {
 	return c, c.Validate()
 }
 func (c Config) Validate() error {
+	if c.Token != "" && !safeToken.MatchString(c.Token) {
+		return fmt.Errorf("TOKEN must contain only URL-safe letters, digits, - and _")
+	}
 	if !c.Auth.Enabled {
 		return fmt.Errorf("auth.enabled must be true")
 	}

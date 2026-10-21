@@ -39,6 +39,10 @@ func Main(args []string, out, errout io.Writer) int {
 		return 1
 	}
 	if len(args) == 1 {
+		if _, e = config.ResolveToken(c.Token, ".mirror-token"); e != nil {
+			fmt.Fprintln(errout, e)
+			return 1
+		}
 		if e = Check(c); e != nil {
 			fmt.Fprintln(errout, e)
 			return 1
@@ -84,6 +88,11 @@ func run(ctx context.Context, c config.Config, logf func(string, ...any)) error 
 	return runConfigured(ctx, c, logf)
 }
 func runConfigured(ctx context.Context, c config.Config, logf func(string, ...any)) error {
+	var tokenErr error
+	c.Token, tokenErr = config.ResolveToken(c.Token, ".mirror-token")
+	if tokenErr != nil {
+		return tokenErr
+	}
 	if e := Check(c); e != nil {
 		return e
 	}

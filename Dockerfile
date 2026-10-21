@@ -16,6 +16,7 @@ LABEL org.opencontainers.image.source="https://github.com/hi2code/oci-pull-proxy
       org.opencontainers.image.licenses="MIT"
 COPY --from=build /out/oci-pull-proxy /oci-pull-proxy
 COPY --from=build --chown=65532:65532 /state/ /data/
+WORKDIR /config
 USER 65532:65532
 EXPOSE 8080 8443
 ENTRYPOINT ["/oci-pull-proxy"]

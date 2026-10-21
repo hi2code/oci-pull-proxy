@@ -15,16 +15,21 @@
 ```dotenv
 PROXY_DOMAIN=x.example.com
 PROXY_USERNAME=myuser
-PROXY_PASSWORD=请替换为长随机密码`
+PROXY_PASSWORD=请替换为长随机密码
 ```
 
 ```sh
 chmod 600 .env
+# 一次性准备；已有 token 文件时请勿清空。Linux 容器以 UID/GID 65532 运行。
+touch .mirror-token
+sudo chown 65532:65532 .mirror-token
+sudo chmod 600 .mirror-token
 docker run -d \
   --name oci-pull-proxy \
   --restart unless-stopped \
   --stop-timeout 30 \
   --env-file .env \
+  --mount type=bind,src="$(pwd)/.mirror-token",dst=/config/.mirror-token \
   -p 80:8080 -p 443:8443 \
   -v oci-cache:/data/cache \
   -v oci-acme:/data/acme \
@@ -39,7 +44,7 @@ docker logs -f oci-pull-proxy
 
 看到“HTTPS 已就绪”后即可使用。`oci-cache` 保存镜像缓存，`oci-acme` 保存证书和 ACME 账户；更新时复用原卷，不要删除证书卷。同一组目录只供一个实例使用；自定义宿主机目录需保证 UID/GID 65532 可写。
 
-也可在仓库根目录创建 `.env` 后运行 `docker compose up -d`。Compose 的卷名带项目名前缀，从 `docker run` 切换时需明确复用原卷。
+也可在仓库根目录创建 `.env`、按上述步骤准备 `.mirror-token` 后运行 `docker compose up -d`。Compose 的卷名带项目名前缀，从 `docker run` 切换时需明确复用原卷。
 
 ## 拉取镜像
 
@@ -68,12 +73,33 @@ docker run --rm -p 8080:80 x.example.com/nginx:latest
 
 支持配置凭据后的私有镜像。SHA-256 digest 寻址的镜像层和 manifest 会缓存，tag manifest 实时拉取；同一镜像的简写、`library/` 和 `docker.io/` 写法共享缓存。
 
+## Docker Hub token 加速
+
+在客户端 `/etc/docker/daemon.json` 中合并以下配置，替换域名和 token，然后重启 Docker：
+
+```json
+{
+  "registry-mirrors": ["https://x.example.com/m/你的token"]
+}
+```
+
+随后直接运行 `docker pull alpine:latest`，无需 `docker login`，镜像名保持原样。此入口只支持 Docker Hub 公共镜像，固定匿名访问 Docker Hub，不使用 JSON 中的上游替换或私有仓库凭据；缓存与原账号密码入口隔离。原登录和多仓库代理用法不变。
+
+只新增可选环境变量 `TOKEN`：在 `.env` 写入 `TOKEN=你自己的随机字符串`（实际值仅允许 `A–Z a–z 0–9 - _`）。建议使用 32 字节以上密码学安全随机数。未配置或为空时，读取 `.env` 同目录的 `.mirror-token`；文件不存在或为空时生成 32 字节随机数，以无填充 Base64URL 保存（43 字符）。文件权限为 `0600`；文件必须保持完整的 43 字符生成值。文件损坏、不可读写或保存失败会启动报错，不会静默替换。非空 `TOKEN` 优先，不读取或覆盖该文件。
+
+从 `.env` 或 `sudo cat .mirror-token` 获取 token，服务日志不会打印它。Docker 的 `env_file` 仅传变量，所以所有部署示例均单独挂载该文件到 `/config/.mirror-token`，重建容器时复用同一文件，不新增状态卷。`deploy/compose.yaml` 使用其同目录的文件。
+
+更换 token：修改 `.env` 的 `TOKEN` 后重建容器；自动模式下先停止服务，再用 `sudo truncate -s 0 .mirror-token` 清空文件，重新启动后读取新 token，并更新客户端配置。不要在运行时删除或替换挂载文件。每个文件仅供一个实例使用。
+
+本地直接运行时，先将 `.env` 中的变量导出到进程环境，并在该文件所在目录启动；程序使用当前工作目录的 `.mirror-token`。程序不会自动加载 `.env`。外部反向代理或 CDN 的访问日志也应关闭该入口的完整 URL 记录或脱敏 token。
+
 ## 配置
 
 优先级：显式环境变量 > `CONFIG_FILE` JSON > 默认值。显式空环境变量也会覆盖 JSON。认证必须启用，用户名、密码不能为空或使用示例占位值。
 
 | 环境变量 | 默认值 / 用途 |
 | --- | --- |
+| `TOKEN` | 可选；优先于 `.mirror-token`，用于 Docker Hub 公共 mirror |
 | `PROXY_DOMAIN` | auto/cloudflare 模式必填，单个域名，不含协议或端口 |
 | `PROXY_USERNAME` / `PROXY_PASSWORD` | 代理登录账号密码 |
 | `TLS_MODE` | `auto`、`manual` 或 `cloudflare`；配置完整证书路径时默认 manual，否则 auto |
@@ -139,7 +165,7 @@ TLS_KEY=/certs/privkey.pem
 
 使用 Compose 时执行 `docker compose -f compose.cloudflare.yaml up -d`。已有容器需先停止并重建，沿用原缓存卷，保留原证书卷以便回退；切回 auto/manual 时同步恢复回源方式和端口映射。
 
-程序仅放行内置 Cloudflare 网段，并检查 Host 与 HTTPS 转发头，镜像接口仍要求账号密码。本机直连（包括健康检查）返回 403；额外反向代理或改写来源地址的网络也可能被拒绝。通过公网域名访问 `/readyz` 验证就绪。Cloudflare 到源站的 HTTP 包含认证信息，使用前需接受这一网络边界，并确认套餐的大文件、流量和超时限制适合实际镜像。
+程序仅放行内置 Cloudflare 网段，并检查 Host 与 HTTPS 转发头，原镜像接口仍要求账号密码，`/m/…` 入口要求 token。本机直连（包括健康检查）返回 403；额外反向代理或改写来源地址的网络也可能被拒绝。通过公网域名访问 `/readyz` 验证就绪。Cloudflare 到源站的 HTTP 包含认证信息，使用前需接受这一网络边界，并确认套餐的大文件、流量和超时限制适合实际镜像。
 
 ## 更新与迁移
 
@@ -197,6 +223,6 @@ go vet ./...
 go build ./...
 ```
 
-测试使用本地模拟上游与 CA，证书失败重试测试约需一分钟。容器验证使用 `docker build -t oci-pull-proxy:verification .` 和 `python3 scripts/container-smoke.py`。
+测试使用本地模拟上游与 CA，证书失败重试测试约需一分钟。容器验证使用 `docker build -t oci-pull-proxy:verification .` 和 `python3 scripts/container-smoke.py`。真实 mirror 验收运行 `python3 scripts/mirror-smoke.py`：创建临时特权 Docker-in-Docker daemon，只连接内部测试网络，禁止直接回退 Docker Hub；测试 HTTPS token 拉取和容器重建后的 token 持久化，结束后清理容器与网络，不更改宿主机 daemon 配置。
 
 推送 main 后，GitHub Actions 通过 Go 检查及容器测试才会发布 `latest` 和 `sha-完整提交哈希` 镜像；推送 `v1.2.3` 标签发布 `1.2.3`，不改动 `latest`。首次发布需在 GHCR 包设置中设为 Public，才能匿名拉取。需要可重复部署时固定镜像 digest。

@@ -4,3 +4,6 @@ certs/*
 data/*
 !certs/.gitkeep
 !data/.gitkeep
+
+.mirror-token
+**/.mirror-token

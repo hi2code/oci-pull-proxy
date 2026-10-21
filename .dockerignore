@@ -6,3 +6,6 @@ certs
 data
 .superpowers
 .worktrees
+
+.mirror-token
+**/.mirror-token

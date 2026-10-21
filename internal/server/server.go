@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -23,10 +24,22 @@ func Handler(proxy http.Handler, ready func() bool) http.Handler {
 		}
 		proxy.ServeHTTP(w, r)
 	})
+	mux.Handle("/m/", v2)
 	mux.Handle("/v2/", v2)
 	mux.Handle("/v2", v2)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// Reject ambiguous paths before ServeMux can clean or redirect them.
+		if r.URL.RawPath != "" || strings.ContainsAny(r.URL.Path, "\\%") || strings.Contains(r.URL.Path, "//") {
+			http.Error(w, "invalid path", 400)
+			return
+		}
+		for _, part := range strings.Split(r.URL.Path, "/") {
+			if part == "." || part == ".." {
+				http.Error(w, "invalid path", 400)
+				return
+			}
+		}
 		mux.ServeHTTP(w, r)
 	})
 }

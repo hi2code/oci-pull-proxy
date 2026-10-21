@@ -20,11 +20,13 @@ import (
 )
 
 type Proxy struct {
-	cfg           config.Config
-	client        *http.Client
-	cache         *cache.DiskCache
-	upstreams     map[string]*url.URL
-	upstreamCreds map[string]credentials
+	public         *Proxy
+	cacheNamespace string
+	cfg            config.Config
+	client         *http.Client
+	cache          *cache.DiskCache
+	upstreams      map[string]*url.URL
+	upstreamCreds  map[string]credentials
 }
 type credentials struct{ username, password string }
 
@@ -50,10 +52,22 @@ func New(cfg config.Config) (*Proxy, error) {
 			p.upstreamCreds[name] = credentials{rc.Username, os.Getenv(rc.PasswordEnv)}
 		}
 	}
+	publicConfig := cfg
+	publicConfig.Auth.Enabled = false
+	publicConfig.Registries = nil
+	publicConfig.Token = ""
+	hub, _ := url.Parse("https://registry-1.docker.io")
+	p.public = &Proxy{cfg: publicConfig, client: p.client, cache: p.cache, cacheNamespace: "public-docker-hub:", upstreams: map[string]*url.URL{"docker.io": hub}, upstreamCreds: map[string]credentials{}}
 	return p, nil
 }
-func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) { p.handle(w, r) }
-func logf(f string, a ...any)                                     { fmt.Printf(time.Now().Format(time.RFC3339)+" "+f+"\n", a...) }
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/m/") {
+		p.serveMirror(w, r)
+		return
+	}
+	p.handle(w, r)
+}
+func logf(f string, a ...any) { fmt.Printf(time.Now().Format(time.RFC3339)+" "+f+"\n", a...) }
 func registryNames(m map[string]*url.URL) []string {
 	a := make([]string, 0, len(m))
 	for k := range m {
@@ -99,7 +113,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	target.RawQuery = r.URL.RawQuery
 	cacheable := r.Method == http.MethodGet && digestRef.MatchString(upPath)
 	canStore := cacheable && r.Header.Get("Range") == ""
-	key := cache.Key(upstream.String(), upPath+"?"+r.URL.RawQuery)
+	key := cache.Key(p.cacheNamespace+upstream.String(), upPath+"?"+r.URL.RawQuery)
 	if cacheable {
 		if f, meta, e := p.cache.Open(key); e == nil {
 			defer f.Close()

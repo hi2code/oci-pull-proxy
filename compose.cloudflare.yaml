@@ -9,6 +9,11 @@ services:
     environment:
       TLS_MODE: cloudflare
     volumes:
+      - type: bind
+        source: ./.mirror-token
+        target: /config/.mirror-token
+        bind:
+          create_host_path: false
       - image-cache:/data/cache
     read_only: true
     tmpfs:

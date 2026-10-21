@@ -23,6 +23,7 @@ import (
 )
 
 func TestCommandsAndDirectoryCheck(t *testing.T) {
+	t.Chdir(t.TempDir())
 	var out, errout bytes.Buffer
 	t.Setenv("PROXY_PASSWORD", "")
 	if Main([]string{"version"}, &out, &errout) != 0 || !strings.Contains(out.String(), "oci-pull-proxy") {
@@ -80,6 +81,7 @@ func manualConfig(t *testing.T, upstream *httptest.Server) config.Config {
 	os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: upstream.Certificate().Raw}), 0600)
 	os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), 0600)
 	var c config.Config
+	c.Token = "app-test-token"
 	c.Server.TLSMode = "manual"
 	c.Server.TLSCert = certFile
 	c.Server.TLSKey = keyFile

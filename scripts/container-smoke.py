@@ -27,7 +27,7 @@ def create(command=None, manual=False):
             "--security-opt=no-new-privileges", "--mount", f"source={cache},target=/data/cache",
             "--mount", f"source={acme},target=/data/acme", "--network", "bridge",
             "-e", "PROXY_DOMAIN=images.example.com", "-e", "PROXY_USERNAME=smoke",
-            "-e", "PROXY_PASSWORD=smoke-only-disposable-secret", "-e", "ACME_ACCEPT_TOS=true",
+            "-e", "PROXY_PASSWORD=smoke-only-disposable-secret", "-e", "TOKEN=container-smoke-token", "-e", "ACME_ACCEPT_TOS=true",
             "-e", "ACME_DIRECTORY_URL=https://127.0.0.1:1/directory"]
     if manual:
         args += ["-e", "TLS_MODE=manual", "-e", "TLS_CERT=/data/acme/cert.pem",

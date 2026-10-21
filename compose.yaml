@@ -8,6 +8,11 @@ services:
       - "443:8443"
     env_file: .env
     volumes:
+      - type: bind
+        source: ./.mirror-token
+        target: /config/.mirror-token
+        bind:
+          create_host_path: false
       - image-cache:/data/cache
       - acme-state:/data/acme
     read_only: true

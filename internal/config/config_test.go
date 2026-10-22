@@ -49,7 +49,7 @@ func TestACMEAcceptanceDefaultsAndOverrides(t *testing.T) {
 }
 func TestInvalidConfiguration(t *testing.T) {
 	for _, tc := range []struct{ k, v, w string }{
-		{"PROXY_PASSWORD", "", "PROXY_PASSWORD"}, {"PROXY_PASSWORD", "replace-with-a-long-random-secret", "PROXY_PASSWORD"}, {"PROXY_DOMAIN", "", "PROXY_DOMAIN"}, {"PROXY_DOMAIN", "https://bad.example", "PROXY_DOMAIN"}, {"ACME_ACCEPT_TOS", "false", "ACME_ACCEPT_TOS"}, {"ACME_ACCEPT_TOS", "oops", "ACME_ACCEPT_TOS"}, {"TLS_MODE", "off", "TLS_MODE"}, {"CACHE_MAX_SIZE_GB", "-1", "CACHE_MAX_SIZE_GB"},
+		{"TOKEN", "v2", "TOKEN"}, {"PROXY_PASSWORD", "", "PROXY_PASSWORD"}, {"PROXY_PASSWORD", "replace-with-a-long-random-secret", "PROXY_PASSWORD"}, {"PROXY_DOMAIN", "", "PROXY_DOMAIN"}, {"PROXY_DOMAIN", "https://bad.example", "PROXY_DOMAIN"}, {"ACME_ACCEPT_TOS", "false", "ACME_ACCEPT_TOS"}, {"ACME_ACCEPT_TOS", "oops", "ACME_ACCEPT_TOS"}, {"TLS_MODE", "off", "TLS_MODE"}, {"CACHE_MAX_SIZE_GB", "-1", "CACHE_MAX_SIZE_GB"},
 	} {
 		t.Run(tc.k+tc.v, func(t *testing.T) {
 			base(t)

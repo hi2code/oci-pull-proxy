@@ -159,6 +159,9 @@ func registryFromEnv(prefix, passwordKey, upstream string) (RegistryConfig, erro
 }
 
 func (c Config) Validate() error {
+	if c.Token == "v2" {
+		return fmt.Errorf("TOKEN value v2 is reserved")
+	}
 	if c.Token != "" && !safeToken.MatchString(c.Token) {
 		return fmt.Errorf("TOKEN must contain only URL-safe letters, digits, - and _")
 	}

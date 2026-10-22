@@ -87,7 +87,7 @@ try:
                f"type=bind,src={root / 'cert.pem'},dst=/usr/local/share/ca-certificates/mirror.crt,readonly",
                "--entrypoint", "sh", dind_image, "-c",
                'update-ca-certificates >/dev/null && exec dockerd-entrypoint.sh "$@"',
-               "sh", "--registry-mirror=https://mirror:8443/m/" + token)
+               "sh", "--registry-mirror=https://mirror:8443/" + token)
         containers.append(daemon)
         wait_for(["exec", daemon, "docker", "info"])
         # No published ports and no egress from this daemon: success must use the mirror.

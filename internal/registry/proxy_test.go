@@ -373,7 +373,7 @@ func TestLogsRedactMirrorTokenAndBearerTokens(t *testing.T) {
 	cfg := config.Config{Token: "server-side-token"}
 	p := &Proxy{cfg: cfg, upstreams: map[string]*url.URL{}}
 	rec := httptest.NewRecorder()
-	p.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/m/client-supplied-token/v2/library/alpine/manifests/latest", nil))
+	p.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/client-supplied-token/v2/library/alpine/manifests/latest", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d", rec.Code)
 	}

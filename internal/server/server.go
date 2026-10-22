@@ -31,7 +31,14 @@ func Handler(proxy http.Handler, ready func() bool) http.Handler {
 		}
 		proxy.ServeHTTP(w, r)
 	})
-	mux.Handle("/m/", v2)
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, route, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		if ok && (route == "v2" || strings.HasPrefix(route, "v2/")) {
+			v2.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}))
 	mux.Handle("/v2/", v2)
 	mux.Handle("/v2", v2)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -41,18 +48,25 @@ func Handler(proxy http.Handler, ready func() bool) http.Handler {
 		w = rec
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// Reject ambiguous paths before ServeMux can clean or redirect them.
-		if r.URL.RawPath != "" || strings.ContainsAny(r.URL.Path, "\\%") || strings.Contains(r.URL.Path, "//") {
+		if ambiguousPath(r.URL) {
 			http.Error(w, "invalid path", 400)
 			return
 		}
-		for _, part := range strings.Split(r.URL.Path, "/") {
-			if part == "." || part == ".." {
-				http.Error(w, "invalid path", 400)
-				return
-			}
-		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// ambiguousPath rejects alternate encodings and path components before routing.
+func ambiguousPath(u *url.URL) bool {
+	if u.RawPath != "" || strings.ContainsAny(u.Path, "\\%") || strings.Contains(u.Path, "//") {
+		return true
+	}
+	for _, part := range strings.Split(u.Path, "/") {
+		if part == "." || part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // statusRecorder captures the status code and body size for the access log while
@@ -114,11 +128,22 @@ func logAccess(rec *statusRecorder, r *http.Request, d time.Duration) {
 		return
 	}
 	p := r.URL.Path
-	if strings.HasPrefix(p, "/m/") {
-		if i := strings.IndexByte(p[len("/m/"):], '/'); i >= 0 {
-			p = "/m/<token>" + p[len("/m/")+i:]
+	// A rejected ambiguous path has no reliable token position.
+	if ambiguousPath(r.URL) {
+		p = "/<invalid-path>"
+	} else if strings.HasPrefix(p, "/m/") && p != "/m/v2" && !strings.HasPrefix(p, "/m/v2/") {
+		rest := strings.TrimPrefix(p, "/m/")
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			p = "/m/<token>" + rest[i:]
 		} else {
 			p = "/m/<token>"
+		}
+	} else if p != "/v2" && !strings.HasPrefix(p, "/v2/") && p != "/healthz" && p != "/readyz" {
+		rest := strings.TrimPrefix(p, "/")
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			p = "/<token>" + rest[i:]
+		} else {
+			p = "/<token>"
 		}
 	}
 	accessLogf("%s %s %d %d %s", r.Method, p, rec.status, rec.bytes, d.Round(time.Millisecond))

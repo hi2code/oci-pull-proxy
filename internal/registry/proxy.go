@@ -64,25 +64,38 @@ func New(cfg config.Config) (*Proxy, error) {
 	return p, nil
 }
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/m/") {
+	if r.URL.Path == "/v2" || strings.HasPrefix(r.URL.Path, "/v2/") {
+		p.handle(w, r)
+		return
+	}
+	_, route, ok := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	if ok && (route == "v2" || strings.HasPrefix(route, "v2/")) {
 		p.serveMirror(w, r)
 		return
 	}
-	p.handle(w, r)
+	http.NotFound(w, r)
 }
 
 var logf = func(f string, a ...any) { fmt.Printf(time.Now().Format(time.RFC3339)+" "+f+"\n", a...) }
 
 // redactPath hides the mirror token while keeping the rest of the route readable.
 func redactPath(p string) string {
-	if !strings.HasPrefix(p, "/m/") {
+	if p == "/v2" || strings.HasPrefix(p, "/v2/") {
 		return p
 	}
-	rest := p[len("/m/"):]
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		return "/m/<token>" + rest[i:]
+	// Keep redacting the removed entry point as clients may still send it.
+	if strings.HasPrefix(p, "/m/") && p != "/m/v2" && !strings.HasPrefix(p, "/m/v2/") {
+		rest := strings.TrimPrefix(p, "/m/")
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			return "/m/<token>" + rest[i:]
+		}
+		return "/m/<token>"
 	}
-	return "/m/<token>"
+	rest := strings.TrimPrefix(p, "/")
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return "/<token>" + rest[i:]
+	}
+	return "/<token>"
 }
 
 // clientIP is best effort: RemoteAddr is the TCP peer, not a forwarded header.

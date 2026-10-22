@@ -28,13 +28,16 @@ func TestMirrorIsolationAndAuthorization(t *testing.T) {
 	calls := 0
 	p.client.Transport = mirrorTransport(func(r *http.Request) (*http.Response, error) {
 		calls++
+		if r.URL.Path != "/v2/library/alpine/blobs/sha256:"+strings.Repeat("a", 64) {
+			t.Errorf("wrong upstream path: %s", r.URL.Path)
+		}
 		if r.URL.Host != "registry-1.docker.io" || r.Header.Get("Authorization") != "" || strings.Contains(r.URL.String(), c.Token) || r.URL.RawQuery != "" {
 			t.Errorf("unsafe upstream request: %s", r.URL.Host)
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("public"))}, nil
 	})
 	h := server.Handler(p, func() bool { return true })
-	path := "/m/secret_token/v2/library/alpine/blobs/sha256:" + strings.Repeat("a", 64)
+	path := "/secret_token/v2/library/alpine/blobs/sha256:" + strings.Repeat("a", 64)
 	request := func(path string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", path, nil)
 		r.SetBasicAuth("client", "secret")
@@ -50,11 +53,23 @@ func TestMirrorIsolationAndAuthorization(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("cache miss: %d", calls)
 	}
+	for _, tc := range []struct {
+		path string
+		code int
+	}{
+		{"/wrong/v2/", 401},
+		{"/m/secret_token/v2/", 404},
+		{"/m/wrong/v2/", 404},
+	} {
+		if w := request(tc.path); w.Code != tc.code {
+			t.Errorf("%s: want %d, got %d", tc.path, tc.code, w.Code)
+		}
+	}
 	for _, bad := range []string{
-		strings.Replace(path, "secret_token", "wrong", 1), "/m/secret_token/v2/ghcr.io/team/image/manifests/latest",
-		"/m/secret_token/v2/library/alpine/manifests/latest?ns=ghcr.io", "/m/secret_token/v2/library/alpine/manifests/latest?token=secret_token",
-		"/m/secret_token/../secret_token/v2/", "/m//secret_token/v2/", "/m/%73ecret_token/v2/", "/m/secret_token%2fv2/", "/m/secret_token/v2/library%2falpine/manifests/latest",
-		"/m/secret_token/v2/library/../alpine/manifests/latest", "/m/secret_token/v2/library\\alpine/manifests/latest",
+		strings.Replace(path, "secret_token", "wrong", 1), "/secret_token/v2/ghcr.io/team/image/manifests/latest",
+		"/secret_token/v2/library/alpine/manifests/latest?ns=ghcr.io", "/secret_token/v2/library/alpine/manifests/latest?token=secret_token",
+		"/secret_token/../secret_token/v2/", "//secret_token/v2/", "/%73ecret_token/v2/", "/secret_token%2fv2/", "/secret_token/v2/library%2falpine/manifests/latest",
+		"/secret_token/v2/library/../alpine/manifests/latest", "/secret_token/v2/library\\alpine/manifests/latest",
 	} {
 		w := request(bad)
 		if w.Code < 400 || w.Header().Get("Location") != "" {
@@ -64,8 +79,15 @@ func TestMirrorIsolationAndAuthorization(t *testing.T) {
 	if calls != 1 {
 		t.Fatal("rejected requests reached upstream")
 	}
-	if w := request("/m/secret_token/v2/"); w.Code != 200 {
-		t.Fatal("ping failed", w.Code)
+	for _, route := range []string{"/secret_token/v2", "/secret_token/v2/"} {
+		if w := request(route); w.Code != 200 {
+			t.Errorf("ping %s: %d", route, w.Code)
+		}
+	}
+	head := httptest.NewRecorder()
+	h.ServeHTTP(head, httptest.NewRequest("HEAD", path, nil))
+	if head.Code != 200 {
+		t.Fatalf("HEAD: %d", head.Code)
 	}
 	if w := request("/v2/"); w.Code != 401 {
 		t.Fatal("original auth bypassed")
@@ -80,7 +102,7 @@ func TestMirrorIsolationAndAuthorization(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
-	r := httptest.NewRequest("GET", strings.TrimPrefix(path, "/m/secret_token"), nil)
+	r := httptest.NewRequest("GET", strings.TrimPrefix(path, "/secret_token"), nil)
 	r.SetBasicAuth("user", "password")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -140,13 +162,44 @@ func TestMirrorBearerAndSameUpstreamCacheIsolation(t *testing.T) {
 	if request(path, true) != "private" {
 		t.Fatal("private request failed")
 	}
-	if request("/m/secret_token"+path+"?ns=docker.io", false) != "public" {
+	if request("/secret_token"+path+"?ns=docker.io", false) != "public" {
 		t.Fatal("private cache leaked")
 	}
-	if request("/m/secret_token"+path, false) != "public" || anonymousTokens != 1 {
+	if request("/secret_token"+path, false) != "public" || anonymousTokens != 1 {
 		t.Fatal("public cache not reused")
 	}
 	if request(path, true) != "private" {
 		t.Fatal("public cache polluted private entry")
+	}
+}
+
+func TestMirrorShortTokenAndProxyLogRedaction(t *testing.T) {
+	lines := captureLogs(t)
+	c := config.Config{Token: "m"}
+	c.Cache.Directory = t.TempDir()
+	p, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := server.Handler(p, func() bool { return true })
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/m/v2/", nil))
+	if w.Code != 200 {
+		t.Fatalf("m is a valid token: %d", w.Code)
+	}
+	p.cfg.Token = "configured-secret"
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/configured-secret/v2/", nil))
+	if w.Code != 200 {
+		t.Fatalf("ping: %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "/wrong-secret/v2/", nil))
+	if w.Code != 401 {
+		t.Fatalf("wrong token: %d", w.Code)
+	}
+	joined := strings.Join(*lines, "\n")
+	if strings.Contains(joined, "configured-secret") || strings.Contains(joined, "wrong-secret") || !strings.Contains(joined, "/<token>/v2/") {
+		t.Fatalf("unsafe or missing mirror log: %s", joined)
 	}
 }

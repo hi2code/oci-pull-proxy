@@ -17,6 +17,9 @@ var envAssignment = regexp.MustCompile(`^[ \t]*(?:export[ \t]+)?([^ \t=:#]+)[ \t
 // inode for file bind mounts and leaves other settings and comments unchanged.
 // Each .env belongs to one running instance, as do the cache and certificate directories.
 func ResolveToken(configured, path string) (string, error) {
+	if configured == "v2" {
+		return "", fmt.Errorf("TOKEN value v2 is reserved")
+	}
 	if configured != "" {
 		if !safeToken.MatchString(configured) {
 			return "", fmt.Errorf("TOKEN must contain only URL-safe letters, digits, - and _")
@@ -152,6 +155,9 @@ func envToken(text string) (token string, start, end int, err error) {
 			valueEnd = valueStart + len(value)
 		}
 		if key == "TOKEN" {
+			if value == "v2" {
+				return "", -1, -1, fmt.Errorf(".env TOKEN value v2 is reserved")
+			}
 			if start >= 0 {
 				return "", -1, -1, fmt.Errorf(".env contains duplicate TOKEN assignments; keep only one")
 			}

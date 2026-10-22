@@ -10,7 +10,7 @@ import (
 )
 
 func (p *Proxy) serveMirror(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/m/")
+	rest := strings.TrimPrefix(r.URL.Path, "/")
 	token, route, ok := strings.Cut(rest, "/")
 	got, want := sha256.Sum256([]byte(token)), sha256.Sum256([]byte(p.cfg.Token))
 	if !ok || p.cfg.Token == "" || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
@@ -39,7 +39,7 @@ func (p *Proxy) serveMirror(w http.ResponseWriter, r *http.Request) {
 	clone.URL.RawQuery = ""
 	clone.RequestURI = route
 	clone.Header.Del("Authorization")
-	logf("mirror 请求转发：%s %s", r.Method, redactPath(route))
+	logf("mirror 请求转发：%s %s", r.Method, redactPath(r.URL.Path))
 	p.public.handle(w, clone)
 }
 

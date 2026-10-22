@@ -113,8 +113,10 @@ try:
             assert len(original_token) == 43, "normal startup did not write TOKEN to the host .env"
         else:
             assert read_token() == original_token, "TOKEN changed on container recreation"
-        assert request(secure, "/m/" + original_token + "/v2/")[0] == 200
-        assert request(secure, "/m/wrong-token/v2/")[0] == 401
+        assert request(secure, "/" + original_token + "/v2/")[0] == 200
+        assert request(secure, "/wrong-token/v2/")[0] == 401
+        assert request(secure, "/m/" + original_token + "/v2/")[0] == 404
+        assert "wrong-token" not in docker("logs", name), "invalid TOKEN leaked to logs"
         assert original_token not in docker("logs", name), "TOKEN leaked to logs"
         assert request(secure, "/healthz")[:2] == (200, b"ok\n")
         assert request(secure, "/v2/")[0] == 401

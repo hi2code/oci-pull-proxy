@@ -76,13 +76,15 @@ docker run --rm -p 8080:80 x.example.com/nginx:latest
 
 ```json
 {
-  "registry-mirrors": ["https://x.example.com/m/你的token"]
+  "registry-mirrors": ["https://x.example.com/你的token"]
 }
 ```
 
+请求路径为 `/<token>/v2/...`，转发到上游时会剥掉 token。旧 `/m/<token>/v2/...` 入口返回 404；升级后请将客户端 mirror URL 改为 `https://域名/你的token` 并重启 Docker。已有 token 和 `.env` 持久化方式继续沿用，保留值 `v2` 除外。
+
 随后直接运行 `docker pull alpine:latest`，无需 `docker login`，镜像名保持原样。此入口只支持 Docker Hub 公共镜像，固定匿名访问 Docker Hub，不使用环境变量配置的上游替换或私有仓库凭据；缓存与原账号密码入口隔离。原登录和多仓库代理用法不变。
 
-在 `.env` 中设置 `TOKEN=你自己的随机字符串`（实际值仅允许 `A–Z a–z 0–9 - _`），或直接留空：
+在 `.env` 中设置 `TOKEN=你自己的随机字符串`（实际值仅允许 `A–Z a–z 0–9 - _`，且不能为保留值 `v2`），或直接留空：
 
 ```dotenv
 TOKEN=
@@ -179,7 +181,7 @@ TLS_KEY=/certs/privkey.pem
 
 已有容器需先停止并重建，沿用原缓存卷，保留原证书卷以便回退；切回 auto/manual 时同步恢复回源方式和端口映射。
 
-程序仅放行内置 Cloudflare 网段，并检查 Host 与 HTTPS 转发头，原镜像接口仍要求账号密码，`/m/…` 入口要求 token。本机直连（包括健康检查）返回 403；额外反向代理或改写来源地址的网络也可能被拒绝。通过公网域名访问 `/readyz` 验证就绪。Cloudflare 到源站的 HTTP 包含认证信息，使用前需接受这一网络边界，并确认套餐的大文件、流量和超时限制适合实际镜像。
+程序仅放行内置 Cloudflare 网段，并检查 Host 与 HTTPS 转发头，原镜像接口仍要求账号密码，`/<token>/v2/…` 入口要求 token。本机直连（包括健康检查）返回 403；额外反向代理或改写来源地址的网络也可能被拒绝。通过公网域名访问 `/readyz` 验证就绪。Cloudflare 到源站的 HTTP 包含认证信息，使用前需接受这一网络边界，并确认套餐的大文件、流量和超时限制适合实际镜像。
 
 ## 更新与重建
 
@@ -204,7 +206,7 @@ curl -fsS https://x.example.com/readyz
 
 `check` 检查本地配置、文件与目录权限，不代表 DNS 或公网访问正常。容器无法启动时，可用原环境变量及卷运行临时容器，在镜像名后追加 `check`，无需映射端口。
 
-每个 `/v2/`、`/m/` 请求会输出多行日志：访问行（方法、路径、状态码、字节数、耗时）加上代理决策行（认证、路由、缓存、上游挑战、token、上游响应）。判断卡在哪一步看最后一行，不要只看 Docker 客户端的提示。密码、bearer token、mirror Token 均不会写入日志（只记录长度），mirror URL 中的 Token 记录为 `<token>`，上游重定向只记录 scheme/host/path（不含签名参数），`/healthz`、`/readyz` 仅在非 2xx 时记录。
+每个 `/v2/`、`/<token>/v2/` 请求会输出多行日志：访问行（方法、路径、状态码、字节数、耗时）加上代理决策行（认证、路由、缓存、上游挑战、token、上游响应）。判断卡在哪一步看最后一行，不要只看 Docker 客户端的提示。密码、bearer token、mirror Token 均不会写入日志（只记录长度），mirror URL 中的 Token 记录为 `<token>`，上游重定向只记录 scheme/host/path（不含签名参数），`/healthz`、`/readyz` 仅在非 2xx 时记录。
 
 未登录代理时（客户端只会看到 `not found`）：
 

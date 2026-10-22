@@ -51,7 +51,7 @@ func TestAccessLogRecordsStatusAndRedactsMirrorToken(t *testing.T) {
 		}
 	})
 	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/m/") {
+		if strings.HasPrefix(r.URL.Path, "/secret-token/") {
 			http.Error(w, "nope", 401)
 			return
 		}
@@ -60,7 +60,7 @@ func TestAccessLogRecordsStatusAndRedactsMirrorToken(t *testing.T) {
 	})
 	h := Handler(proxy, func() bool { return true })
 
-	for _, p := range []string{"/healthz", "/v2/", "/v2/library/alpine/manifests/latest", "/m/secret-token/v2/library/alpine/manifests/latest"} {
+	for _, p := range []string{"/healthz", "/v2/", "/v2/library/alpine/manifests/latest", "/secret-token/v2/library/alpine/manifests/latest"} {
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", p, nil))
 	}
 	if len(lines) != 3 {
@@ -72,7 +72,7 @@ func TestAccessLogRecordsStatusAndRedactsMirrorToken(t *testing.T) {
 	if strings.Contains(strings.Join(lines, "\n"), "secret-token") {
 		t.Fatalf("mirror token leaked: %q", lines)
 	}
-	if !strings.Contains(lines[2], "/m/<token>/v2/library/alpine/manifests/latest") {
+	if !strings.Contains(lines[2], "/<token>/v2/library/alpine/manifests/latest") {
 		t.Fatalf("mirror path not redacted as expected: %q", lines[2])
 	}
 }
@@ -89,5 +89,38 @@ func TestAccessLogLogsFailingHealthProbe(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/readyz", nil))
 	if len(lines) != 1 || !strings.Contains(lines[0], "GET /readyz 503 ") {
 		t.Fatalf("failing probe must be logged: %q", lines)
+	}
+}
+
+func TestAccessLogRedactsRejectedMirrorPaths(t *testing.T) {
+	var lines []string
+	original := accessLogf
+	accessLogf = func(format string, a ...any) { lines = append(lines, fmt.Sprintf(format, a...)) }
+	t.Cleanup(func() { accessLogf = original })
+	h := Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "invalid mirror token", 401)
+	}), func() bool { return true })
+	for _, tc := range []struct {
+		path, redacted string
+		code           int
+	}{
+		{"/wrong-token/v2/", "/<token>/v2/", 401},
+		{"/m/old-token/v2/", "/m/<token>/v2/", 404},
+		{"/malformed-token//v2/", "/<invalid-path>", 400},
+		{"/encoded%2dtoken/v2/", "/<invalid-path>", 400},
+		{"//configured-token/v2/", "/<invalid-path>", 400},
+		{"/./wrong-token/v2/", "/<invalid-path>", 400},
+		{"/../configured-token/v2/", "/<invalid-path>", 400},
+		{"/configured-token/../configured-token/v2/", "/<invalid-path>", 400},
+		{"/wrong-token\\v2/", "/<invalid-path>", 400},
+		{"/bare-token", "/<token>", 404},
+		{"/m/v2/", "/<token>/v2/", 401},
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", tc.path, nil))
+		line := lines[len(lines)-1]
+		if w.Code != tc.code || !strings.Contains(line, "GET "+tc.redacted+" ") || strings.Contains(line, "-token") {
+			t.Errorf("%s: status %d, log %q", tc.path, w.Code, line)
+		}
 	}
 }

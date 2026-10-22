@@ -86,12 +86,12 @@ func TestMirrorTokenReadsEnvValues(t *testing.T) {
 }
 
 func TestMirrorTokenRejectsInvalidOrInaccessibleFile(t *testing.T) {
-	for _, value := range []string{"bad token", "a/b", "a=", "a\n"} {
+	for _, value := range []string{"v2", "bad token", "a/b", "a=", "a\n"} {
 		if _, err := ResolveToken(value, filepath.Join(t.TempDir(), "missing")); err == nil {
 			t.Fatal("accepted invalid configured token")
 		}
 	}
-	for _, value := range []string{"TOKEN=bad token\n", "TOKEN=a/b\n", "TOKEN='unclosed\n", "TOKEN=one\nTOKEN=two\n", "TOKEN=\"valid\"garbage\n", "TOKEN\n"} {
+	for _, value := range []string{"TOKEN=v2\n", "TOKEN='v2' # reserved\n", "TOKEN=bad token\n", "TOKEN=a/b\n", "TOKEN='unclosed\n", "TOKEN=one\nTOKEN=two\n", "TOKEN=\"valid\"garbage\n", "TOKEN\n"} {
 		p := filepath.Join(t.TempDir(), ".env")
 		os.WriteFile(p, []byte(value), 0600)
 		if _, err := ResolveToken("", p); err == nil {
